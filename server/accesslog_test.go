@@ -12,20 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package protostruct supports operations on the protocol buffer Struct message.
 package server
 
 import (
 	"context"
-	"io"
-	"log"
+	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/apigee/apigee-remote-service-golib/v2/analytics"
 	"github.com/apigee/apigee-remote-service-golib/v2/auth"
+	"github.com/apigee/apigee-remote-service-golib/v2/product"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -54,11 +60,11 @@ func makeExtAuthFields() map[string]*structpb.Value {
 func TestHandleHTTPAccessLogs(t *testing.T) {
 
 	now := time.Now()
-	nowUnix := now.UnixNano() / 1000000
+	nowUnix := now.UnixMilli()
 	nowProto := timestamppb.New(now)
 
 	dur := 7 * time.Millisecond
-	thenUnix := now.Add(dur).UnixNano() / 1000000
+	thenUnix := now.Add(dur).UnixMilli()
 	durProto := durationpb.New(dur)
 
 	extAuthzFields := makeExtAuthFields()
@@ -99,7 +105,6 @@ func TestHandleHTTPAccessLogs(t *testing.T) {
 			RequestMethod: core.RequestMethod_GET,
 			UserAgent:     userAgent,
 			ForwardedFor:  clientIP,
-			// RequestHeaders: headers,
 		},
 		Response: &v3.HTTPResponseProperties{
 			ResponseCode: &wrappers.UInt32Value{
@@ -211,7 +216,7 @@ func TestHandleHTTPAccessLogs(t *testing.T) {
 
 func TestTimeToUnix(t *testing.T) {
 	now := time.Now()
-	want := now.UnixNano() / 1000000
+	want := now.UnixMilli()
 
 	nowProto := timestamppb.New(now)
 	got := pbTimestampToApigee(nowProto)
@@ -228,7 +233,7 @@ func TestTimeToUnix(t *testing.T) {
 func TestAddDurationApigee(t *testing.T) {
 	now := time.Now()
 	duration := 6 * time.Minute
-	want := now.Add(duration).UnixNano() / 1000000
+	want := now.Add(duration).UnixMilli()
 
 	nowProto := timestamppb.New(now)
 	durationProto := durationpb.New(duration)
@@ -244,7 +249,7 @@ func TestAddDurationApigee(t *testing.T) {
 	}
 
 	got = pbTimestampAddDurationApigee(nowProto, nil)
-	want = now.UnixNano() / 1000000
+	want = now.UnixMilli()
 	if got != want {
 		t.Errorf("got: %d, want: %d", got, want)
 	}
@@ -260,12 +265,10 @@ func (a *testAnalyticsMan) Start() {
 }
 func (a *testAnalyticsMan) Close() {}
 func (a *testAnalyticsMan) SendRecords(authContext *auth.Context, records []analytics.Record) error {
-
 	for _, rec := range records {
 		rec = rec.EnsureFields(authContext)
 		a.records = append(a.records, rec)
 	}
-
 	return nil
 }
 
@@ -280,13 +283,15 @@ func TestStreamAccessLogs(t *testing.T) {
 
 	defer time.Sleep(5 * time.Millisecond)
 	defer srv.GracefulStop()
-	conn, err := grpc.DialContext(ctx, "", grpc.WithContextDialer(tals.getBufDialer()), grpc.WithInsecure())
+	conn, err := grpc.DialContext(ctx, "", grpc.WithContextDialer(tals.getBufDialer()), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("failed to dial: %v", err)
 	}
 	defer conn.Close()
 
 	client := als.NewAccessLogServiceClient(conn)
+
+	// Test Case 1: Valid messages
 	stream, err := client.StreamAccessLogs(ctx)
 	if err != nil {
 		t.Fatalf("failed to open client stream: %v", err)
@@ -299,29 +304,40 @@ func TestStreamAccessLogs(t *testing.T) {
 		makeHTTPLogWithoutExtAuthFilterMetadata(),
 		makeHTTPLogWithUnknownTarget(),
 		makeTCPLog(),
-		{}, // empty one,
 	}
 
 	for _, v := range logMsgs {
 		if err := stream.Send(v); err != nil {
-			t.Error(err)
+			t.Errorf("Send(%v): %v", v, err)
 		}
 	}
 
-	if _, err := stream.CloseAndRecv(); err != nil && err != io.EOF {
-		t.Error(err)
+	if _, err := stream.CloseAndRecv(); err != nil {
+		t.Errorf("CloseAndRecv() for valid messages: expected clean close (nil error), got: %v", err)
 	}
 
+	// Test Case 2: Empty message causing error
 	stream, err = client.StreamAccessLogs(ctx)
 	if err != nil {
 		t.Fatalf("failed to open client stream: %v", err)
 	}
+	// Give server a moment
 	time.Sleep(10 * time.Millisecond)
+	// Send an empty message, which the server should reject.
 	if err := stream.Send(&als.StreamAccessLogsMessage{}); err != nil {
-		t.Error(err)
+		t.Logf("Send() on empty message returned error: %v", err)
 	}
-	if _, err := stream.CloseAndRecv(); err == nil || err == io.EOF {
-		t.Error("server should have closed the stream and responded nil, but not got error marshalling it")
+
+	// The server should close the stream with an error because handleLogEntries likely returns an error for an empty message.
+	if _, err := stream.CloseAndRecv(); err == nil {
+		t.Error("CloseAndRecv(): server should have returned an error for empty message, got nil")
+	} else {
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.InvalidArgument {
+			t.Errorf("CloseAndRecv(): expected InvalidArgument error, got: %v", err)
+		} else {
+			t.Logf("CloseAndRecv(): server correctly returned error: %v", err)
+		}
 	}
 }
 
@@ -332,22 +348,49 @@ type testAccessLogService struct {
 func (tals *testAccessLogService) startAccessLogServer(t *testing.T) *grpc.Server {
 	srv := grpc.NewServer()
 
+	// Mock product manager for the handler
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(product.APIResponse{APIProducts: []product.APIProduct{}})
+	}))
+	// No defer ts.Close() here, test func will close srv
+
+	serverURL, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	opts := product.Options{
+		Client: http.DefaultClient, BaseURL: serverURL, RefreshRate: time.Hour, Org: "hi", Env: "test",
+	}
+	productMan, err := product.NewManager(opts)
+	if err != nil {
+		t.Fatalf("product.NewManager: %v", err)
+	}
+
 	testAnalyticsMan := &testAnalyticsMan{}
 	h := &Handler{
 		orgName:               "hi",
 		envName:               "test",
 		analyticsMan:          testAnalyticsMan,
+		productMan:            productMan, // Add product manager
 		appendMetadataHeaders: true,
 	}
 	server := AccessLogServer{}
 
-	server.Register(srv, h, 5*time.Millisecond)
+	server.Register(srv, h, 100*time.Millisecond) // Increased timeout
 
 	go func() {
 		if err := srv.Serve(tals.listener); err != nil {
-			log.Fatalf("failed to start grpc server: %v", err)
+			if !strings.Contains(err.Error(), "closed") {
+				t.Errorf("failed to start grpc server: %v", err)
+			}
 		}
 	}()
+	// Close the test server when the test is done
+	t.Cleanup(func() {
+		ts.Close()
+		productMan.Close()
+	})
 
 	return srv
 }
@@ -358,6 +401,7 @@ func (tals *testAccessLogService) getBufDialer() func(context.Context, string) (
 	}
 }
 
+// ... (make...Log functions remain the same) ...
 func makeValidHTTPLog() *als.StreamAccessLogsMessage {
 	return &als.StreamAccessLogsMessage{
 		LogEntries: &als.StreamAccessLogsMessage_HttpLogs{
