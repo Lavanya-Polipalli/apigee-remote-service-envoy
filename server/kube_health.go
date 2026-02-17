@@ -53,7 +53,7 @@ func (h *KubeHealth) error() error {
 		return err
 	}
 	if response.Status != grpc_health_v1.HealthCheckResponse_SERVING {
-		return fmt.Errorf(response.Status.String())
+		return fmt.Errorf("Health check response status not serving: %s", response.Status.String())
 	}
 	return nil
 }
