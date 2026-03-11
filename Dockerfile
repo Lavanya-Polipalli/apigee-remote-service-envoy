@@ -15,8 +15,8 @@
 # Default build arguments are set for the 'default' flavor (static, no cgo, no FIPS).
 # These are overridden in the .github/workflows/docker.yaml for other flavors.
 
-# Use golang:1.24-bookworm as the builder image.
-ARG BUILD_CONTAINER=golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+# Use golang:1.25-bookworm as the builder image.
+ARG BUILD_CONTAINER=golang:1.25-bookworm@sha256:7af46e70d2017aef0b4ce2422afbcf39af0511a61993103e948b61011233ec42
 
 ARG RUN_CONTAINER=gcr.io/distroless/static-debian12@sha256:cd64bec9cec257044ce3a8dd3620cf83b387920100332f2b041f19c4d2febf93
 

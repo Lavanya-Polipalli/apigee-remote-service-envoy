@@ -23,11 +23,9 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - 
-        name: Check out code
+      - name: Check out code
         uses: actions/checkout@v4
-      - 
-        name: Reviewdog Lint
+      - name: Reviewdog Lint
         uses: reviewdog/action-golangci-lint@v2
         with:
           reporter: github-check
@@ -36,19 +34,21 @@ jobs:
     name: Test and Cover
     runs-on: ubuntu-latest
     steps:
-      - 
-        name: Check out code
+      - name: Check out code
         uses: actions/checkout@v4
-      -
-        name: Set up Go
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.24
-      - 
-        name: Run Unit tests
-        run: go test -coverprofile=coverage.txt ./...
-      - 
-        name: Upload Coverage report to CodeCov
+          go-version: '1.25' # Updated to 1.25
+          cache: true
+      - name: Run Unit tests
+        env:
+          GOTOOLCHAIN: local 
+        run: |
+          go version
+          go test -race -coverprofile=coverage.txt ./...
+      - name: Upload Coverage report to CodeCov
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.txt
+          token: ${{ secrets.CODECOV_TOKEN }} 

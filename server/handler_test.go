@@ -117,6 +117,7 @@ func TestNewHandler(t *testing.T) {
 	// valid credentials given in config; internalAPI set to GCP managed URL
 	config.Tenant.RemoteServiceAPI = config.Tenant.InternalAPI
 	config.Tenant.InternalAPI = ""
+	//nolint:staticcheck // SA1019: using deprecated CredentialsFromJSON for test mock
 	cred, err := google.CredentialsFromJSON(context.Background(), fakeServiceAccount(), ApigeeAPIScope)
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +167,7 @@ func TestNewHandlerWithTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	keyFile := path.Join(tempDir, "key.pem")
 	certFile := path.Join(tempDir, "cert.pem")
@@ -265,7 +266,7 @@ func TestMutualTLSRoundTripper(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	keyFile := path.Join(tempDir, "key.pem")
 	certFile := path.Join(tempDir, "cert.pem")

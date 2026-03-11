@@ -283,11 +283,14 @@ func TestStreamAccessLogs(t *testing.T) {
 
 	defer time.Sleep(5 * time.Millisecond)
 	defer srv.GracefulStop()
-	conn, err := grpc.DialContext(ctx, "", grpc.WithContextDialer(tals.getBufDialer()), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient("passthrough:///", 
+    grpc.WithContextDialer(tals.getBufDialer()), 
+    grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		t.Fatalf("failed to dial: %v", err)
+    	t.Fatalf("failed to dial: %v", err)
 	}
-	defer conn.Close()
+	
+	defer func() { _ = conn.Close() }()
 
 	client := als.NewAccessLogServiceClient(conn)
 
@@ -350,8 +353,9 @@ func (tals *testAccessLogService) startAccessLogServer(t *testing.T) *grpc.Serve
 
 	// Mock product manager for the handler
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(product.APIResponse{APIProducts: []product.APIProduct{}})
+    w.WriteHeader(http.StatusOK)
+    
+    _ = json.NewEncoder(w).Encode(product.APIResponse{APIProducts: []product.APIProduct{}})
 	}))
 	// No defer ts.Close() here, test func will close srv
 

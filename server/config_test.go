@@ -130,7 +130,7 @@ func TestHybridSingleFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tf.Name())
+	defer func() { _ = os.Remove(tf.Name()) }()
 
 	const config = `
     tenant:
@@ -171,7 +171,7 @@ func TestMultifileConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tf.Name())
+	defer func() { _ = os.Remove(tf.Name()) }()
 
 	configCRD, secretCRD, _, err := makeCRDs()
 	if err != nil {
@@ -188,7 +188,7 @@ func TestMultifileConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(secretDir)
+	defer func() { _ = os.RemoveAll(secretDir) }()
 
 	for k, v := range secretCRD.Data {
 		data, err := base64.StdEncoding.DecodeString(v)
@@ -213,7 +213,7 @@ func TestIncompletePolicySecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tf.Name())
+	defer func() { _ = os.Remove(tf.Name()) }()
 
 	configCRD, policySecretCRD, _, err := makeCRDs()
 	if err != nil {
@@ -253,7 +253,7 @@ func TestLoadOrders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tf.Name())
+	defer func() { _ = os.Remove(tf.Name()) }()
 
 	// put ConfigMap in the end
 	configMapYAML, err := makeYAML(policySecretCRD, analyticsSecretCRD, configCRD)
@@ -279,7 +279,7 @@ func TestLoadOrders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tf.Name())
+	defer func() { _ = os.Remove(tf.Name()) }()
 
 	// put ConfigMap in the middle
 	configMapYAML, err = makeYAML(policySecretCRD, configCRD, analyticsSecretCRD)
@@ -317,7 +317,7 @@ func TestIgnoreIrrelevantConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tf.Name())
+	defer func() { _ = os.Remove(tf.Name()) }()
 
 	otherCRD := &ConfigMapCRD{
 		APIVersion: "v1",
@@ -352,7 +352,7 @@ func TestLoadLegacyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tf.Name())
+	defer func() { _ = os.Remove(tf.Name()) }()
 
 	configCRD := makeConfigCRD(allConfigOptions)
 	secretCRD, err := makePolicySecretCRD()
@@ -393,7 +393,7 @@ tenant:
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tf.Name())
+	defer func() { _ = os.Remove(tf.Name()) }()
 
 	// put ConfigMap in the end
 	configMapYAML, err := makeYAML(configCRD)
@@ -416,7 +416,7 @@ tenant:
 	if err := os.WriteFile(credFile, fakeServiceAccount(), 0644); err != nil {
 		t.Fatalf("%v", err)
 	}
-	defer os.RemoveAll(credDir)
+	defer func() { _ = os.RemoveAll(credDir) }()
 
 	// valid path to analytics credentials
 	c := DefaultConfig()
@@ -426,10 +426,10 @@ tenant:
 
 	// cache original GOOGLE_APPLICATION_CREDENTIALS for recoverage
 	oldEnv := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
-	defer os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", oldEnv)
+	defer func() { _ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", oldEnv) }()
 
 	// set valid GOOGLE_APPLICATION_CREDENTIALS
-	os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credFile)
+	_ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credFile)
 	c = DefaultConfig()
 	if err := c.Load(tf.Name(), "", "", true); err != nil {
 		t.Error(err)
@@ -438,7 +438,7 @@ tenant:
 	// no analytics credentials given and invalid config
 	// explicitly set invalid GOOGLE_APPLICATION_CREDENTIALS to avoid
 	// any interference from the test environment
-	os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "not valid")
+	_ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "not valid")
 	c = DefaultConfig()
 	err = c.Load(tf.Name(), "", "", true)
 	if err == nil {
@@ -469,7 +469,7 @@ func TestAnalyticsRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tf.Name())
+	defer func() { _ = os.Remove(tf.Name()) }()
 
 	// put ConfigMap in the end
 	configMapYAML, err := makeYAML(policySecretCRD, analyticsSecretCRD, configCRD)
@@ -511,7 +511,7 @@ func TestInvalidConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tf.Name())
+	defer func() { _ = os.Remove(tf.Name()) }()
 
 	// a bad simple config
 	if _, err := tf.WriteString("not a good yaml"); err != nil {
@@ -530,7 +530,7 @@ func TestInvalidConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tf.Name())
+	defer func() { _ = os.Remove(tf.Name()) }()
 
 	configCRD := makeConfigCRD("not a good yaml")
 	configMapYAML, err := makeYAML(configCRD)
@@ -567,11 +567,11 @@ func makeConfigCRD(config string) *ConfigMapCRD {
 func TestValidate(t *testing.T) {
 	// cache original GOOGLE_APPLICATION_CREDENTIALS for recoverage
 	oldEnv := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
-	defer os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", oldEnv)
+	defer func() { _ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", oldEnv) }()
 
 	// explicitly set invalid GOOGLE_APPLICATION_CREDENTIALS to avoid
 	// any interference from the test environment
-	os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "invalid path")
+	_ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "invalid path")
 
 	c := &Config{}
 	var wantErrs []string

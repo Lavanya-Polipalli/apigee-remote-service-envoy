@@ -20,6 +20,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync" // Added
 	"testing"
 	"time"
 
@@ -29,9 +30,15 @@ import (
 )
 
 func TestKubeHealth(t *testing.T) {
+	var mu sync.Mutex // Added to protect 'fail'
 	var fail bool
+	
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if fail {
+		mu.Lock()         // Added lock
+		shouldFail := fail
+		mu.Unlock()       // Added unlock
+
+		if shouldFail {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -47,13 +54,16 @@ func TestKubeHealth(t *testing.T) {
 	opts := product.Options{
 		Client:      http.DefaultClient,
 		BaseURL:     serverURL,
-		RefreshRate: time.Minute, // Must be >= 1 minute
+		RefreshRate: time.Minute,
 		Org:         "org",
 		Env:         "env",
 	}
 
-	// 1. Start with failure to test initial state
+	// 1. Start with failure
+	mu.Lock()
 	fail = true
+	mu.Unlock()
+
 	productMan, err := product.NewManager(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -64,17 +74,15 @@ func TestKubeHealth(t *testing.T) {
 	handler := &Handler{productMan: productMan}
 	kubeHealth := NewKubeHealth(handler, grpcHealth)
 
-	// Verify "products not loaded" error
 	if err := kubeHealth.error(); err == nil || !strings.Contains(strings.ToLower(err.Error()), "products not loaded") {
 		t.Errorf("expected products not loaded, got: %v", err)
 	}
 
 	// 2. Allow success
+	mu.Lock()
 	fail = false
+	mu.Unlock()
 
-	// Since we can't force a refresh easily without waiting a minute, 
-	// we rely on the fact that NewManager starts an immediate initial fetch.
-	// We poll until the background fetch (which was failing) finally succeeds.
 	ready := false
 	for i := 0; i < 50; i++ {
 		if err := kubeHealth.error(); err == nil {

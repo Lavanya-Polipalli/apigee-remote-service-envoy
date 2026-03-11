@@ -2,6 +2,8 @@ module github.com/apigee/apigee-remote-service-envoy/v2
 
 go 1.25.0
 
+toolchain go1.25.8
+
 // replace github.com/apigee/apigee-remote-service-golib/v2 => ../apigee-remote-service-golib
 
 require (

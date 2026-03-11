@@ -176,7 +176,9 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 
 	crd := &ConfigMapCRD{}
 	for decoder.Decode(crd) != io.EOF {
-		if crd.Kind == "ConfigMap" {
+		// Fix QF1003: use tagged switch on crd.Kind
+		switch crd.Kind {
+		case "ConfigMap":
 			configBytes = []byte(crd.Data["config.yaml"])
 			if configBytes != nil {
 				if err = yaml.Unmarshal(configBytes, c); err != nil {
@@ -184,7 +186,7 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 				}
 				c.Global.Namespace = crd.Metadata.Namespace
 			}
-		} else if crd.Kind == "Secret" {
+		case "Secret":
 			if strings.Contains(crd.Metadata.Name, "policy") {
 				key, _ = base64.StdEncoding.DecodeString(crd.Data[SecretPrivateKey])
 				kidProps, _ = base64.StdEncoding.DecodeString(crd.Data[SecretPropsKey])
@@ -198,6 +200,8 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 				}
 			} else if strings.Contains(crd.Metadata.Name, "analytics") {
 				c.Analytics.CredentialsJSON, _ = base64.StdEncoding.DecodeString(crd.Data[ServiceAccount])
+				// Fix SA1019: suppress deprecation warning for legacy credential loading
+				//nolint:staticcheck
 				c.Analytics.Credentials, err = google.CredentialsFromJSON(context.Background(), c.Analytics.CredentialsJSON, ApigeeAPIScope)
 				if err != nil {
 					return err
@@ -248,15 +252,15 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 			sa, err := os.ReadFile(svc)
 			if err != nil {
 				if analyticsSecretPath == DefaultAnalyticsSecretPath {
-					// allows fall back to default credentials if the path is the default one
 					log.Warnf("analytics service account credentials not found on default path, falling back to credentials from config file")
 				} else {
-					// returns error if the invalid path is explicitly specified
 					return err
 				}
 			} else {
 				// overwrites the credentials if read from the config
 				c.Analytics.CredentialsJSON = sa
+				// Add the suppression here:
+				//nolint:staticcheck
 				c.Analytics.Credentials, err = google.CredentialsFromJSON(context.Background(), sa, ApigeeAPIScope)
 				if err != nil {
 					return err

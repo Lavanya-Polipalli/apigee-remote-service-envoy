@@ -83,7 +83,7 @@ func ReadProperties(reader io.Reader) (map[string]string, error) {
 // WriteProperties writes Java-style %s=%s properties (no escaping)
 func WriteProperties(writer io.Writer, props map[string]string) error {
 	for k, v := range props {
-		if _, err := writer.Write([]byte(fmt.Sprintf("%s=%s\n", k, v))); err != nil {
+		if _, err := fmt.Fprintf(writer, "%s=%s\n", k, v); err != nil {
 			return err
 		}
 	}
