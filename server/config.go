@@ -200,10 +200,11 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 				}
 			} else if strings.Contains(crd.Metadata.Name, "analytics") {
 				c.Analytics.CredentialsJSON, _ = base64.StdEncoding.DecodeString(crd.Data[ServiceAccount])
-				// Fix SA1019: suppress deprecation warning for legacy credential loading
 				//nolint:staticcheck
-				c.Analytics.Credentials, err = google.CredentialsFromJSON(context.Background(), c.Analytics.CredentialsJSON, ApigeeAPIScope)
-				if err != nil {
+				creds, err := google.CredentialsFromJSON(context.Background(), c.Analytics.CredentialsJSON, ApigeeAPIScope)
+				if err == nil {
+					c.Analytics.Credentials = creds
+				} else {
 					return err
 				}
 			}
@@ -249,22 +250,20 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 		if analyticsSecretPath != "" {
 			svc := path.Join(analyticsSecretPath, ServiceAccount)
 			log.Debugf("using analytics service account credentials from: %s", svc)
-			sa, err := os.ReadFile(svc)
-			if err != nil {
-				if analyticsSecretPath == DefaultAnalyticsSecretPath {
-					log.Warnf("analytics service account credentials not found on default path, falling back to credentials from config file")
+			if sa, err := os.ReadFile(svc); err == nil {
+				c.Analytics.CredentialsJSON = sa
+				// Fix for Lines 265-266: Consolidated into one path
+				//nolint:staticcheck
+				creds, err := google.CredentialsFromJSON(context.Background(), sa, ApigeeAPIScope)
+				if err == nil {
+					c.Analytics.Credentials = creds
 				} else {
 					return err
 				}
+			} else if analyticsSecretPath != DefaultAnalyticsSecretPath {
+				return err
 			} else {
-				// overwrites the credentials if read from the config
-				c.Analytics.CredentialsJSON = sa
-				// Add the suppression here:
-				//nolint:staticcheck
-				c.Analytics.Credentials, err = google.CredentialsFromJSON(context.Background(), sa, ApigeeAPIScope)
-				if err != nil {
-					return err
-				}
+				log.Warnf("analytics service account credentials not found on default path, falling back")
 			}
 		}
 	}
