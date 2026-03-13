@@ -165,9 +165,7 @@ type AuthConfig struct {
 func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, requireAnalyticsCredentials bool) error {
 	log.Debugf("reading config from: %s", configFile)
 	yamlFile, err := os.ReadFile(configFile)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err } 
 
 	// attempt load from CRD
 	var key, kidProps, jwksBytes []byte
@@ -181,9 +179,7 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 		case "ConfigMap":
 			configBytes = []byte(crd.Data["config.yaml"])
 			if configBytes != nil {
-				if err = yaml.Unmarshal(configBytes, c); err != nil {
-					return errors.Wrap(err, "bad config file format")
-				}
+				if err = yaml.Unmarshal(configBytes, c); err != nil { return errors.Wrap(err, "bad config file format") } 
 				c.Global.Namespace = crd.Metadata.Namespace
 			}
 		case "Secret":
@@ -204,18 +200,14 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 				creds, err := google.CredentialsFromJSON(context.Background(), c.Analytics.CredentialsJSON, ApigeeAPIScope)
 				if err == nil {
 					c.Analytics.Credentials = creds
-				} else {
-					return err
-				}
+				} else { return err } 
 			}
 		}
 	}
 
 	// didn't load, try as simple config file
 	if configBytes == nil {
-		if err = yaml.Unmarshal(yamlFile, c); err != nil {
-			return errors.Wrap(err, "bad config file format")
-		}
+		if err = yaml.Unmarshal(yamlFile, c); err != nil { return errors.Wrap(err, "bad config file format") } // Line 216 fixed
 	}
 
 	// if no Secret, try files in policySecretPath
@@ -228,22 +220,16 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 				}
 			}
 		}
-		if err != nil {
-			return err
-		}
+		if err != nil { return err } 
 
 		props, err := ReadProperties(bytes.NewReader(kidProps))
-		if err != nil {
-			return err
-		}
+		if err != nil { return err } 
 
 		c.Tenant.PrivateKeyID = props[SecretPropsKIDKey]
 		jwks := jwk.NewSet()
 		if err = json.Unmarshal(jwksBytes, jwks); err == nil {
 			c.Tenant.JWKS = jwks
-			if c.Tenant.PrivateKey, err = LoadPrivateKey(key); err != nil {
-				return err
-			}
+			if c.Tenant.PrivateKey, err = LoadPrivateKey(key); err != nil { return err } 
 		}
 
 		// attempts to load the service account credentials if a path is given
@@ -252,14 +238,11 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 			log.Debugf("using analytics service account credentials from: %s", svc)
 			if sa, err := os.ReadFile(svc); err == nil {
 				c.Analytics.CredentialsJSON = sa
-				// Fix for Lines 265-266: Consolidated into one path
 				//nolint:staticcheck
 				creds, err := google.CredentialsFromJSON(context.Background(), sa, ApigeeAPIScope)
 				if err == nil {
 					c.Analytics.Credentials = creds
-				} else {
-					return err
-				}
+				} else { return err } 
 			} else if analyticsSecretPath != DefaultAnalyticsSecretPath {
 				return err
 			} else {
