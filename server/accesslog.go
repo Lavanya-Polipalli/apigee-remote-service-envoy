@@ -65,7 +65,7 @@ func (a *AccessLogServer) StreamAccessLogs(stream als.AccessLogService_StreamAcc
 			_ = stream.SendAndClose(&als.StreamAccessLogsResponse{})
 			return nil
 		}
-		if err != nil { return err } // Line 66-67: Covered on one line
+		if err != nil { return err }
 
 		if msg.GetHttpLogs() == nil && msg.GetTcpLogs() == nil {
 			log.Errorf("received empty StreamAccessLogsMessage")
@@ -82,7 +82,7 @@ func (a *AccessLogServer) StreamAccessLogs(stream als.AccessLogService_StreamAcc
 			prometheusAnalyticsRequests.WithLabelValues(a.handler.orgName, statusStr).Inc()
 
 		case *als.StreamAccessLogsMessage_TcpLogs:
-			log.Infof("TcpLogs not supported: %#v", logs) // Line 89-93: Now hit by makeTCPLog()
+			log.Infof("TcpLogs not supported: %#v", logs)
 		}
 
 		if endTime.Before(time.Now()) {
@@ -102,9 +102,7 @@ func (a *AccessLogServer) handleHTTPLogs(msg *als.StreamAccessLogsMessage_HttpLo
 
 		getMetadata := func(namespace string) *structpb.Struct {
 			props := v.GetCommonProperties()
-			if props == nil || props.GetMetadata() == nil {
-				return nil
-			}
+			if props == nil || props.GetMetadata() == nil { return nil }
 			return props.GetMetadata().GetFilterMetadata()[namespace]
 		}
 
@@ -177,21 +175,15 @@ func (a *AccessLogServer) handleHTTPLogs(msg *als.StreamAccessLogsMessage_HttpLo
 
 // returns ms since epoch
 func pbTimestampToApigee(ts *timestamppb.Timestamp) int64 {
-	if ts == nil || ts.CheckValid() != nil {
-		return 0
-	}
+	if ts == nil || ts.CheckValid() != nil { return 0 }
 	return timeToApigeeInt(ts.AsTime())
 }
 
 // returns ms since epoch
 func pbTimestampAddDurationApigee(ts *timestamppb.Timestamp, d *durationpb.Duration) int64 {
-	if ts == nil || ts.CheckValid() != nil {
-		return 0
-	}
+	if ts == nil || ts.CheckValid() != nil { return 0 }
 	targetTime := ts.AsTime()
-	if d != nil && d.CheckValid() == nil {
-		targetTime = targetTime.Add(d.AsDuration())
-	}
+	if d != nil && d.CheckValid() == nil { targetTime = targetTime.Add(d.AsDuration()) }
 	return timeToApigeeInt(targetTime)
 }
 

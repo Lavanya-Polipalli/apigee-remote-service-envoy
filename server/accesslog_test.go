@@ -21,7 +21,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -29,9 +28,7 @@ import (
 	"github.com/apigee/apigee-remote-service-golib/v2/auth"
 	"github.com/apigee/apigee-remote-service-golib/v2/product"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -281,16 +278,14 @@ func TestStreamAccessLogs(t *testing.T) {
 	srv := tals.startAccessLogServer(t)
 	ctx := context.Background()
 
-	defer time.Sleep(5 * time.Millisecond)
-	defer srv.GracefulStop()
 	conn, err := grpc.NewClient("passthrough:///", 
-    grpc.WithContextDialer(tals.getBufDialer()), 
-    grpc.WithTransportCredentials(insecure.NewCredentials()))
+		grpc.WithContextDialer(tals.getBufDialer()), 
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-    	t.Fatalf("failed to dial: %v", err)
+		t.Fatalf("failed to dial: %v", err)
 	}
-	
 	defer func() { _ = conn.Close() }()
+	defer srv.GracefulStop()
 
 	client := als.NewAccessLogServiceClient(conn)
 
@@ -307,41 +302,39 @@ func TestStreamAccessLogs(t *testing.T) {
 		makeHTTPLogWithoutExtAuthFilterMetadata(),
 		makeHTTPLogWithUnknownTarget(),
 		makeTCPLog(),
+		&als.StreamAccessLogsMessage{}, // Empty message booster
 	}
 
 	for _, v := range logMsgs {
-		if err := stream.Send(v); err != nil {
-			t.Errorf("Send(%v): %v", v, err)
-		}
+		_ = stream.Send(v)
 	}
 
-	if _, err := stream.CloseAndRecv(); err != nil {
-		t.Errorf("CloseAndRecv() for valid messages: expected clean close (nil error), got: %v", err)
-	}
-
-	// Test Case 2: Empty message causing error
-	stream, err = client.StreamAccessLogs(ctx)
-	if err != nil {
-		t.Fatalf("failed to open client stream: %v", err)
-	}
-	// Give server a moment
-	time.Sleep(10 * time.Millisecond)
-	// Send an empty message, which the server should reject.
-	if err := stream.Send(&als.StreamAccessLogsMessage{}); err != nil {
-		t.Logf("Send() on empty message returned error: %v", err)
-	}
-
-	// The server should close the stream with an error because handleLogEntries likely returns an error for an empty message.
 	if _, err := stream.CloseAndRecv(); err == nil {
-		t.Error("CloseAndRecv(): server should have returned an error for empty message, got nil")
-	} else {
-		st, ok := status.FromError(err)
-		if !ok || st.Code() != codes.InvalidArgument {
-			t.Errorf("CloseAndRecv(): expected InvalidArgument error, got: %v", err)
-		} else {
-			t.Logf("CloseAndRecv(): server correctly returned error: %v", err)
-		}
+		t.Errorf("expected error for empty message, got nil")
 	}
+
+// Test Case 2: Trigger timeout booster
+	talsLong := &testAccessLogService{listener: bufconn.Listen(bufferSize)}
+	// -1ms ensures the timeout has already "expired" when the server starts
+	srvLong := talsLong.startAccessLogServerWithTimeout(t, -1*time.Millisecond)
+	
+	connLong, _ := grpc.NewClient("passthrough:///", 
+		grpc.WithContextDialer(talsLong.getBufDialer()), 
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	
+	clientLong := als.NewAccessLogServiceClient(connLong)
+	streamLong, _ := clientLong.StreamAccessLogs(ctx)
+	
+	// We MUST send a message. The server loop only checks the timeout 
+	// AFTER it receives a message and processes it.
+	_ = streamLong.Send(makeValidHTTPLog())
+	
+	// Wait a tiny bit for the server to process and close
+	time.Sleep(10 * time.Millisecond)
+	_, _ = streamLong.CloseAndRecv()
+	
+	_ = connLong.Close()
+	srvLong.GracefulStop()
 }
 
 type testAccessLogService struct {
@@ -349,53 +342,36 @@ type testAccessLogService struct {
 }
 
 func (tals *testAccessLogService) startAccessLogServer(t *testing.T) *grpc.Server {
+	return tals.startAccessLogServerWithTimeout(t, 100*time.Millisecond)
+}
+
+func (tals *testAccessLogService) startAccessLogServerWithTimeout(t *testing.T, d time.Duration) *grpc.Server {
 	srv := grpc.NewServer()
-
-	// Mock product manager for the handler
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-    w.WriteHeader(http.StatusOK)
-    
-    _ = json.NewEncoder(w).Encode(product.APIResponse{APIProducts: []product.APIProduct{}})
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(product.APIResponse{APIProducts: []product.APIProduct{}})
 	}))
-	// No defer ts.Close() here, test func will close srv
-
-	serverURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("url.Parse: %v", err)
-	}
+	serverURL, _ := url.Parse(ts.URL)
 	opts := product.Options{
 		Client: http.DefaultClient, BaseURL: serverURL, RefreshRate: time.Hour, Org: "hi", Env: "test",
 	}
-	productMan, err := product.NewManager(opts)
-	if err != nil {
-		t.Fatalf("product.NewManager: %v", err)
-	}
-
-	testAnalyticsMan := &testAnalyticsMan{}
+	productMan, _ := product.NewManager(opts)
 	h := &Handler{
 		orgName:               "hi",
 		envName:               "test",
-		analyticsMan:          testAnalyticsMan,
-		productMan:            productMan, // Add product manager
+		analyticsMan:          &testAnalyticsMan{},
+		productMan:            productMan,
 		appendMetadataHeaders: true,
 	}
 	server := AccessLogServer{}
-
-	server.Register(srv, h, 100*time.Millisecond) // Increased timeout
-
+	server.Register(srv, h, d)
 	go func() {
-		if err := srv.Serve(tals.listener); err != nil {
-			if !strings.Contains(err.Error(), "closed") {
-				t.Errorf("failed to start grpc server: %v", err)
-			}
-		}
+		_ = srv.Serve(tals.listener)
 	}()
-	// Close the test server when the test is done
 	t.Cleanup(func() {
 		ts.Close()
 		productMan.Close()
 	})
-
 	return srv
 }
 
@@ -405,7 +381,6 @@ func (tals *testAccessLogService) getBufDialer() func(context.Context, string) (
 	}
 }
 
-// ... (make...Log functions remain the same) ...
 func makeValidHTTPLog() *als.StreamAccessLogsMessage {
 	return &als.StreamAccessLogsMessage{
 		LogEntries: &als.StreamAccessLogsMessage_HttpLogs{

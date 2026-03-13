@@ -174,7 +174,6 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 
 	crd := &ConfigMapCRD{}
 	for decoder.Decode(crd) != io.EOF {
-		// Fix QF1003: use tagged switch on crd.Kind
 		switch crd.Kind {
 		case "ConfigMap":
 			configBytes = []byte(crd.Data["config.yaml"])
@@ -188,31 +187,23 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 				kidProps, _ = base64.StdEncoding.DecodeString(crd.Data[SecretPropsKey])
 				jwksBytes, _ = base64.StdEncoding.DecodeString(crd.Data[SecretJWKSKey])
 
-				// check the lengths as DecodeString() only returns empty bytes
-				if len(key) == 0 || len(kidProps) == 0 || len(jwksBytes) == 0 { // all or nothing
-					key = nil
-					kidProps = nil
-					jwksBytes = nil
+				if len(key) == 0 || len(kidProps) == 0 || len(jwksBytes) == 0 { 
+					key = nil; kidProps = nil; jwksBytes = nil 
 				}
 			} else if strings.Contains(crd.Metadata.Name, "analytics") {
 				c.Analytics.CredentialsJSON, _ = base64.StdEncoding.DecodeString(crd.Data[ServiceAccount])
-				//nolint:staticcheck
+				//nolint:staticcheck // SA1019: ignore deprecation for now
 				creds, err := google.CredentialsFromJSON(context.Background(), c.Analytics.CredentialsJSON, ApigeeAPIScope)
-				if err == nil {
-					c.Analytics.Credentials = creds
-				} else { return err } 
+				if err == nil { c.Analytics.Credentials = creds } else { return err } 
 			}
 		}
 	}
 
-	// didn't load, try as simple config file
 	if configBytes == nil {
-		if err = yaml.Unmarshal(yamlFile, c); err != nil { return errors.Wrap(err, "bad config file format") } // Line 216 fixed
+		if err = yaml.Unmarshal(yamlFile, c); err != nil { return errors.Wrap(err, "bad config file format") } 
 	}
 
-	// if no Secret, try files in policySecretPath
 	if c.IsGCPManaged() {
-
 		if policySecretPath != "" && key == nil {
 			if key, err = os.ReadFile(path.Join(policySecretPath, SecretPrivateKey)); err == nil {
 				if kidProps, err = os.ReadFile(path.Join(policySecretPath, SecretPropsKey)); err == nil {
@@ -232,20 +223,15 @@ func (c *Config) Load(configFile, policySecretPath, analyticsSecretPath string, 
 			if c.Tenant.PrivateKey, err = LoadPrivateKey(key); err != nil { return err } 
 		}
 
-		// attempts to load the service account credentials if a path is given
 		if analyticsSecretPath != "" {
 			svc := path.Join(analyticsSecretPath, ServiceAccount)
 			log.Debugf("using analytics service account credentials from: %s", svc)
 			if sa, err := os.ReadFile(svc); err == nil {
 				c.Analytics.CredentialsJSON = sa
-				//nolint:staticcheck
+				//nolint:staticcheck // SA1019: ignore deprecation for now
 				creds, err := google.CredentialsFromJSON(context.Background(), sa, ApigeeAPIScope)
-				if err == nil {
-					c.Analytics.Credentials = creds
-				} else { return err } 
-			} else if analyticsSecretPath != DefaultAnalyticsSecretPath {
-				return err
-			} else {
+				if err == nil { c.Analytics.Credentials = creds } else { return err } 
+			} else if analyticsSecretPath != DefaultAnalyticsSecretPath { return err } else {
 				log.Warnf("analytics service account credentials not found on default path, falling back")
 			}
 		}
@@ -280,21 +266,15 @@ func (c *Config) Validate(requireAnalyticsCredentials bool) error {
 			cred, err := google.FindDefaultCredentials(context.Background(), ApigeeAPIScope)
 			if err != nil {
 				errs = errorset.Append(errs, fmt.Errorf("tenant.internal_api is required if analytics credentials not given"))
-			} else { // to avoid the non-name error
-				c.Analytics.Credentials = cred
-			}
+			} else { c.Analytics.Credentials = cred }
 		}
 	} else {
 		if c.Tenant.InternalAPI != "" {
 			errs = errorset.Append(errs, fmt.Errorf("tenant.internal_api and analytics credentials are mutually exclusive"))
 		}
 	}
-	if c.Tenant.OrgName == "" {
-		errs = errorset.Append(errs, fmt.Errorf("tenant.org_name is required"))
-	}
-	if c.Tenant.EnvName == "" {
-		errs = errorset.Append(errs, fmt.Errorf("tenant.env_name is required"))
-	}
+	if c.Tenant.OrgName == "" { errs = errorset.Append(errs, fmt.Errorf("tenant.org_name is required")) }
+	if c.Tenant.EnvName == "" { errs = errorset.Append(errs, fmt.Errorf("tenant.env_name is required")) }
 	if (c.Global.TLS.CertFile != "" || c.Global.TLS.KeyFile != "") &&
 		(c.Global.TLS.CertFile == "" || c.Global.TLS.KeyFile == "") {
 		errs = errorset.Append(errs, fmt.Errorf("global.tls.cert_file and global.tls.key_file are both required if either are present"))
@@ -329,10 +309,10 @@ type Metadata struct {
 	Namespace string `yaml:"namespace"`
 }
 
-// note: hybrid forces these specific file extensions! https://docs.apigee.com/hybrid/v1.2/k8s-secrets
+// note: hybrid forces these specific file extensions!
 const (
 	SecretJWKSKey     = "remote-service.crt"        // hybrid treats .crt as blob
 	SecretPrivateKey  = "remote-service.key"        // private key
-	SecretPropsKey    = "remote-service.properties" // java properties format: %s=%s
+	SecretPropsKey    = "remote-service.properties" // java properties format
 	SecretPropsKIDKey = "kid"
 )

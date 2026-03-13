@@ -17,7 +17,7 @@ name: Build
 on:
   push:
   pull_request:
-  
+
 jobs:
   lint:
     name: Lint
@@ -25,32 +25,40 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
       - name: Reviewdog Lint
         uses: reviewdog/action-golangci-lint@v2
         with:
           reporter: github-check
-          
+          go_version: '1.25'
+
   test:
     name: Test and Cover
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25' # Updated to 1.25
+          go-version: '1.25'
           cache: true
+
       - name: Run Unit tests
         env:
-          GOTOOLCHAIN: local 
-        run: |
-          go version
-          go test -race -coverprofile=coverage.txt ./...
+          GOTOOLCHAIN: local
+        run: go test -race -coverprofile=coverage.txt ./...
+
       - name: Upload Coverage report to CodeCov
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.txt
-          token: ${{ secrets.CODECOV_TOKEN }} 
+          token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
           verbose: true
