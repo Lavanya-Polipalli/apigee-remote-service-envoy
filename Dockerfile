@@ -25,6 +25,7 @@ FROM ${BUILD_CONTAINER} as builder
 
 ARG CGO_ENABLED=0
 ARG GODEBUG=""  
+ARG GOFIPS140="" 
 ARG LDFLAGS="-s -w -X main.version=unknown -X main.commit=unknown -X main.date=unknown"
 ARG GO_TAGS="netgo,osusergo" # Tags for static build
 
@@ -39,8 +40,12 @@ ADD . .
 RUN go mod download
 
 # Build the application.
-RUN echo "Building with: CGO_ENABLED=${CGO_ENABLED} GODEBUG=${GODEBUG} GO_TAGS='${GO_TAGS}'"
-RUN GOTOOLCHAIN=local GOOS=linux GOARCH=amd64 CGO_ENABLED=${CGO_ENABLED} GODEBUG=${GODEBUG} go build -a \
+RUN echo "Building with: CGO_ENABLED=${CGO_ENABLED} GODEBUG=${GODEBUG} GOFIPS140=${GOFIPS140} GO_TAGS='${GO_TAGS}'"
+RUN GOTOOLCHAIN=local GOOS=linux GOARCH=amd64 \
+  CGO_ENABLED=${CGO_ENABLED} \
+  GODEBUG=${GODEBUG} \
+  GOFIPS140=${GOFIPS140} \
+  go build -a \
   -tags="${GO_TAGS}" \
   -ldflags "${LDFLAGS}" \
   -o apigee-remote-service-envoy .
@@ -65,4 +70,3 @@ EXPOSE 5000/tcp 5001/tcp
 
 # Run entrypoint.
 ENTRYPOINT ["/apigee-remote-service-envoy"]
-
