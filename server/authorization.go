@@ -25,6 +25,7 @@ import (
 	"github.com/apigee/apigee-remote-service-golib/v2/auth"
 	"github.com/apigee/apigee-remote-service-golib/v2/context"
 	"github.com/apigee/apigee-remote-service-golib/v2/log"
+	"github.com/apigee/apigee-remote-service-golib/v2/product"
 	"github.com/apigee/apigee-remote-service-golib/v2/quota"
 	envoy_auth "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	envoy_type "github.com/envoyproxy/go-control-plane/envoy/type/v3"
@@ -138,11 +139,26 @@ func (a *AuthorizationServer) Check(ctx gocontext.Context, req *envoy_auth.Check
 		return a.denied(req, tracker, authContext, api), nil
 	}
 
-	// authorize against products
+	// authorize against products across all path interpretations
 	method := req.Attributes.Request.Http.Method
-	authorizedOps := a.handler.productMan.Authorize(authContext, api, path, method)
-	if len(authorizedOps) == 0 {
+	paths, err := expandPathInterpretations(path)
+	if err != nil {
+		log.Debugf("denying unsafe request path: %v", err)
 		return a.denied(req, tracker, authContext, api), nil
+	}
+	var authorizedOps []product.AuthorizedOperation
+	seenOps := make(map[string]struct{})
+	for _, candidatePath := range paths {
+		ops := a.handler.productMan.Authorize(authContext, api, candidatePath, method)
+		if len(ops) == 0 {
+			return a.denied(req, tracker, authContext, api), nil
+		}
+		for _, op := range ops {
+			if _, ok := seenOps[op.ID]; !ok {
+				seenOps[op.ID] = struct{}{}
+				authorizedOps = append(authorizedOps, op)
+			}
+		}
 	}
 	authContext.AnalyticsProduct = authorizedOps[0].APIProduct
 
