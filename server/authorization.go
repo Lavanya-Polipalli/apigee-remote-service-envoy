@@ -33,6 +33,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const (
@@ -91,25 +92,7 @@ func (a *AuthorizationServer) Check(ctx gocontext.Context, req *envoy_auth.Check
 
 	// check for JWT from Envoy filter
 	protoBufStruct := req.Attributes.GetMetadataContext().GetFilterMetadata()[jwtFilterMetadataKey]
-	fieldsMap := protoBufStruct.GetFields()
-	var claims map[string]interface{}
-
-	// use jwtProviderKey check if jwtProviderKey is set in config
-	if a.handler.jwtProviderKey != "" {
-		claimsStruct, ok := fieldsMap[a.handler.jwtProviderKey]
-		if ok {
-			log.Debugf("Using JWT at provider key: %s", a.handler.jwtProviderKey)
-			claims = DecodeToMap(claimsStruct.GetStructValue())
-		}
-	} else { // otherwise iterate over apiKeyClaim loop
-		for k, v := range fieldsMap {
-			vFields := v.GetStructValue().GetFields()
-			if vFields[a.handler.apiKeyClaim] != nil || vFields["api_product_list"] != nil {
-				log.Debugf("Using JWT with provider key: %s", k)
-				claims = DecodeToMap(v.GetStructValue())
-			}
-		}
-	}
+	claims := extractJWTClaims(protoBufStruct.GetFields(), a.handler.jwtProviderKey, a.handler.apiKeyClaim)
 
 	splitPath := strings.SplitN(req.Attributes.Request.Http.Path, "?", 2)
 	path := splitPath[0]
@@ -347,4 +330,52 @@ type multitenantContext struct {
 
 func (o *multitenantContext) Environment() string {
 	return o.env
+}
+
+// extractJWTClaims selects claims from Envoy jwt_authn filter metadata.
+// Raw JWT claims are only adopted from the configured jwtProviderKey.
+// When jwtProviderKey is unset, only a non-empty string apiKeyClaim value is
+// forwarded so Apigee verifies it; conflicting values across providers are ignored.
+func extractJWTClaims(fieldsMap map[string]*structpb.Value, jwtProviderKey, apiKeyClaim string) map[string]interface{} {
+	if jwtProviderKey != "" {
+		claimsStruct, ok := fieldsMap[jwtProviderKey]
+		if !ok {
+			return nil
+		}
+		log.Debugf("Using JWT at provider key: %s", jwtProviderKey)
+		return DecodeToMap(claimsStruct.GetStructValue())
+	}
+
+	if apiKeyClaim == "" || apiKeyClaim == "api_product_list" {
+		return nil
+	}
+
+	var apiKeyVal string
+	var apiKeyProvider string
+	found := false
+	for k, v := range fieldsMap {
+		claimVal := v.GetStructValue().GetFields()[apiKeyClaim]
+		if claimVal == nil {
+			continue
+		}
+		sv, ok := claimVal.Kind.(*structpb.Value_StringValue)
+		if !ok || sv.StringValue == "" {
+			continue
+		}
+		if !found {
+			found = true
+			apiKeyVal = sv.StringValue
+			apiKeyProvider = k
+		} else if sv.StringValue != apiKeyVal {
+			log.Warnf("Conflicting %s claims across JWT providers; ignoring", apiKeyClaim)
+			return nil
+		}
+	}
+	if !found {
+		return nil
+	}
+	log.Debugf("Using API key claim %s from provider key: %s", apiKeyClaim, apiKeyProvider)
+	return map[string]interface{}{
+		apiKeyClaim: apiKeyVal,
+	}
 }

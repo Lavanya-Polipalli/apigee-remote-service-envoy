@@ -221,6 +221,10 @@ func NewHandler(config *Config) (*Handler, error) {
 		isMultitenant:         config.Tenant.IsMultitenant(),
 	}
 
+	if h.jwtProviderKey == "" {
+		log.Warnf("auth.jwt_provider_key is unset; raw JWT claims will not be adopted from Envoy jwt_authn metadata")
+	}
+
 	return h, nil
 }
 

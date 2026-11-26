@@ -17,8 +17,13 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"testing"
 	"time"
@@ -31,6 +36,10 @@ import (
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	v3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"github.com/gogo/googleapis/google/rpc"
+	"github.com/lestrrat-go/jwx/jwa"
+	"github.com/lestrrat-go/jwx/jwk"
+	"github.com/lestrrat-go/jwx/jws"
+	"github.com/lestrrat-go/jwx/jwt"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -271,7 +280,7 @@ func TestCheck(t *testing.T) {
 		t.Errorf("got: %d, want: empty claims", len(testAuthMan.claims))
 	}
 
-	// empty jwtProviderKey to enter the claims loop
+	// empty jwtProviderKey should not adopt raw api_product_list claims
 	server.handler.jwtProviderKey = ""
 	if resp, err = server.Check(context.Background(), req); err != nil {
 		t.Errorf("should not get error. got: %s", err)
@@ -280,9 +289,9 @@ func TestCheck(t *testing.T) {
 		t.Errorf("got: %d, want: %d", resp.Status.Code, int32(rpc.OK))
 	}
 
-	// testAuthMan.claims should be nil
-	if len(testAuthMan.claims) != 1 {
-		t.Errorf("got: %d, want: claims length to be 1", len(testAuthMan.claims))
+	// testAuthMan.claims should be nil when jwtProviderKey is unset and no apiKeyClaim is present
+	if len(testAuthMan.claims) != 0 {
+		t.Errorf("got: %d, want: empty claims", len(testAuthMan.claims))
 	}
 
 	// check deny when allowUnauthorized = true
@@ -525,4 +534,315 @@ func (q *testQuotaMan) Apply(auth *libAuth.Context, p product.AuthorizedOperatio
 	return &quota.Result{
 		Exceeded: q.exceeded,
 	}, nil
+}
+
+func mustStruct(t *testing.T, m map[string]interface{}) *structpb.Struct {
+	t.Helper()
+	s, err := structpb.NewStruct(m)
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	return s
+}
+
+func TestExtractJWTClaims(t *testing.T) {
+	t.Run("provider key set adopts only configured provider", func(t *testing.T) {
+		meta := mustStruct(t, map[string]interface{}{
+			"apigee": map[string]interface{}{
+				"api_product_list": []interface{}{"legit-product"},
+				"client_id":        "legit-client",
+				"application_name": "legit-app",
+			},
+			"secondary": map[string]interface{}{
+				"api_product_list": []interface{}{"attacker-product"},
+				"client_id":        "attacker-client",
+				"application_name": "attacker-app",
+			},
+		})
+		for i := 0; i < 50; i++ {
+			got := extractJWTClaims(meta.GetFields(), "apigee", "client_id")
+			if got["client_id"] != "legit-client" {
+				t.Fatalf("iter %d: got client_id=%v, want legit-client", i, got["client_id"])
+			}
+		}
+	})
+
+	t.Run("provider key unset ignores raw api_product_list claims", func(t *testing.T) {
+		meta := mustStruct(t, map[string]interface{}{
+			"secondary": map[string]interface{}{
+				"api_product_list": []interface{}{"attacker-product"},
+				"application_name": "attacker-app",
+			},
+		})
+		got := extractJWTClaims(meta.GetFields(), "", "client_id")
+		if got != nil {
+			t.Fatalf("expected nil claims, got %#v", got)
+		}
+	})
+
+	t.Run("provider key unset forwards only apiKeyClaim string", func(t *testing.T) {
+		meta := mustStruct(t, map[string]interface{}{
+			"secondary": map[string]interface{}{
+				"api_product_list": []interface{}{"attacker-product"},
+				"client_id":        "some-key",
+				"application_name": "attacker-app",
+			},
+		})
+		got := extractJWTClaims(meta.GetFields(), "", "client_id")
+		want := map[string]interface{}{"client_id": "some-key"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("provider key unset ignores numeric empty and list apiKeyClaim", func(t *testing.T) {
+		cases := []map[string]interface{}{
+			{"p": map[string]interface{}{"client_id": float64(12345), "api_product_list": []interface{}{"p1"}}},
+			{"p": map[string]interface{}{"client_id": "", "api_product_list": []interface{}{"p1"}}},
+			{"p": map[string]interface{}{"client_id": []interface{}{"k1", "k2"}, "api_product_list": []interface{}{"p1"}}},
+		}
+		for i, c := range cases {
+			got := extractJWTClaims(mustStruct(t, c).GetFields(), "", "client_id")
+			if got != nil {
+				t.Errorf("case %d: got %#v, want nil", i, got)
+			}
+		}
+	})
+
+	t.Run("provider key unset ignores conflicting apiKeyClaim across providers", func(t *testing.T) {
+		meta := mustStruct(t, map[string]interface{}{
+			"apigee": map[string]interface{}{
+				"client_id":        "key-a",
+				"api_product_list": []interface{}{"p1"},
+			},
+			"secondary": map[string]interface{}{
+				"client_id":        "key-b",
+				"api_product_list": []interface{}{"p2"},
+			},
+		})
+		for i := 0; i < 50; i++ {
+			got := extractJWTClaims(meta.GetFields(), "", "client_id")
+			if got != nil {
+				t.Fatalf("iter %d: expected nil on conflicting apiKeyClaim, got %#v", i, got)
+			}
+		}
+	})
+
+	t.Run("provider key unset allows identical apiKeyClaim across providers", func(t *testing.T) {
+		meta := mustStruct(t, map[string]interface{}{
+			"p1": map[string]interface{}{"client_id": "same-key"},
+			"p2": map[string]interface{}{"client_id": "same-key"},
+		})
+		got := extractJWTClaims(meta.GetFields(), "", "client_id")
+		want := map[string]interface{}{"client_id": "same-key"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %#v, want %#v", got, want)
+		}
+	})
+}
+
+func TestCheckJWTProviderConfusionWithRealAuthManager(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	jwkKey, err := jwk.New(&privKey.PublicKey)
+	if err != nil {
+		t.Fatalf("jwk.New: %v", err)
+	}
+	_ = jwkKey.Set(jwk.KeyIDKey, "test-kid")
+	_ = jwkKey.Set(jwk.AlgorithmKey, jwa.RS256)
+	jwksJSON, err := json.Marshal(map[string]interface{}{"keys": []interface{}{jwkKey}})
+	if err != nil {
+		t.Fatalf("marshal jwks: %v", err)
+	}
+
+	makeSignedToken := func(clientID string, products []string) string {
+		tok := jwt.New()
+		_ = tok.Set(jwt.ExpirationKey, time.Now().Add(time.Hour))
+		_ = tok.Set("client_id", clientID)
+		_ = tok.Set("application_name", "verified-app")
+		_ = tok.Set("api_product_list", products)
+		hdrs := jws.NewHeaders()
+		_ = hdrs.Set(jws.KeyIDKey, "test-kid")
+		signed, err := jwt.Sign(tok, jwa.RS256, privKey, jwt.WithHeaders(hdrs))
+		if err != nil {
+			t.Fatalf("jwt.Sign: %v", err)
+		}
+		return string(signed)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/certs":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(jwksJSON)
+		case "/verifyApiKey":
+			var body struct {
+				APIKey string `json:"apiKey"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body.APIKey == "valid-key" {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"token": makeSignedToken("valid-key", []string{"product1"}),
+				})
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	remoteURL, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	authMan, err := libAuth.NewManager(libAuth.Options{
+		Client: ts.Client(),
+		Org:    "org",
+	})
+	if err != nil {
+		t.Fatalf("auth.NewManager: %v", err)
+	}
+	defer authMan.Close()
+
+	products := product.ProductsNameMap{
+		"product1": &product.APIProduct{DisplayName: "product1", Name: "product1"},
+	}
+
+	newServer := func(jwtProviderKey string) *AuthorizationServer {
+		return &AuthorizationServer{
+			handler: &Handler{
+				orgName:          "org",
+				envName:          "env",
+				remoteServiceAPI: remoteURL,
+				apiKeyClaim:      "client_id",
+				apiHeader:        headerAPI,
+				apiKeyHeader:     "x-api-key",
+				jwtProviderKey:   jwtProviderKey,
+				authMan:          authMan,
+				productMan:       &testProductMan{api: "api", resolve: true, products: products},
+				quotaMan:         &testQuotaMan{},
+				analyticsMan:     &testAnalyticsMan{},
+			},
+		}
+	}
+
+	makeReq := func(path string, headers map[string]string, jwtMeta map[string]interface{}) *v3.CheckRequest {
+		if headers == nil {
+			headers = map[string]string{}
+		}
+		headers[headerAPI] = "api"
+		var filterMeta map[string]*structpb.Struct
+		if jwtMeta != nil {
+			filterMeta = map[string]*structpb.Struct{
+				jwtFilterMetadataKey: mustStruct(t, jwtMeta),
+			}
+		}
+		return &v3.CheckRequest{
+			Attributes: &v3.AttributeContext{
+				Request: &v3.AttributeContext_Request{
+					Http: &v3.AttributeContext_HttpRequest{
+						Path:    path,
+						Headers: headers,
+						Method:  http.MethodGet,
+					},
+					Time: timestamppb.Now(),
+				},
+				MetadataContext: &core.Metadata{
+					FilterMetadata: filterMeta,
+				},
+			},
+		}
+	}
+
+	// 1. Unset jwtProviderKey: secondary provider carrying api_product_list alone must NOT authenticate.
+	srvUnset := newServer("")
+	req := makeReq("/hello", nil, map[string]interface{}{
+		"secondary": map[string]interface{}{
+			"api_product_list": []interface{}{"product1"},
+			"application_name": "spoofed-app",
+		},
+	})
+	resp, err := srvUnset.Check(context.Background(), req)
+	if err != nil || resp.Status.Code != int32(rpc.UNAUTHENTICATED) {
+		t.Fatalf("secondary payload alone: got code=%v err=%v, want UNAUTHENTICATED", resp.GetStatus().GetCode(), err)
+	}
+
+	// 2. Unset jwtProviderKey: secondary provider with bogus client_id AND api_product_list must NOT fall back to raw claims.
+	req = makeReq("/hello", nil, map[string]interface{}{
+		"secondary": map[string]interface{}{
+			"client_id":        "bogus-key",
+			"api_product_list": []interface{}{"product1"},
+			"application_name": "spoofed-app",
+		},
+	})
+	resp, err = srvUnset.Check(context.Background(), req)
+	if err != nil || resp.Status.Code != int32(rpc.PERMISSION_DENIED) {
+		t.Fatalf("bogus api_key_claim with raw claims: got code=%v err=%v, want PERMISSION_DENIED", resp.GetStatus().GetCode(), err)
+	}
+
+	// 3. Unset jwtProviderKey: invalid header API key + secondary provider api_product_list must be denied.
+	req = makeReq("/hello", map[string]string{"x-api-key": "bad-header-key"}, map[string]interface{}{
+		"secondary": map[string]interface{}{
+			"api_product_list": []interface{}{"product1"},
+			"application_name": "spoofed-app",
+		},
+	})
+	resp, err = srvUnset.Check(context.Background(), req)
+	if err != nil || resp.Status.Code != int32(rpc.PERMISSION_DENIED) {
+		t.Fatalf("invalid header key + secondary claims: got code=%v err=%v, want PERMISSION_DENIED", resp.GetStatus().GetCode(), err)
+	}
+
+	// 4. Unset jwtProviderKey: valid api_key_claim verified by Apigee succeeds.
+	req = makeReq("/hello", nil, map[string]interface{}{
+		"secondary": map[string]interface{}{
+			"client_id":        "valid-key",
+			"api_product_list": []interface{}{"spoofed-product"},
+		},
+	})
+	resp, err = srvUnset.Check(context.Background(), req)
+	if err != nil || resp.Status.Code != int32(rpc.OK) {
+		t.Fatalf("valid api_key_claim: got code=%v err=%v, want OK", resp.GetStatus().GetCode(), err)
+	}
+
+	// 5. Unset jwtProviderKey: valid header API key and query API key still accepted.
+	req = makeReq("/hello", map[string]string{"x-api-key": "valid-key"}, nil)
+	resp, err = srvUnset.Check(context.Background(), req)
+	if err != nil || resp.Status.Code != int32(rpc.OK) {
+		t.Fatalf("valid header key: got code=%v err=%v, want OK", resp.GetStatus().GetCode(), err)
+	}
+	req = makeReq("/hello?x-api-key=valid-key", nil, nil)
+	resp, err = srvUnset.Check(context.Background(), req)
+	if err != nil || resp.Status.Code != int32(rpc.OK) {
+		t.Fatalf("valid query key: got code=%v err=%v, want OK", resp.GetStatus().GetCode(), err)
+	}
+
+	// 6. Configured jwtProviderKey: Apigee provider claims accepted deterministically even alongside secondary provider.
+	srvSet := newServer("apigee")
+	for i := 0; i < 30; i++ {
+		req = makeReq("/hello", nil, map[string]interface{}{
+			"apigee": map[string]interface{}{
+				"client_id":        "apigee-client",
+				"application_name": "apigee-app",
+				"api_product_list": []interface{}{"product1"},
+			},
+			"secondary": map[string]interface{}{
+				"client_id":        "attacker-client",
+				"application_name": "attacker-app",
+				"api_product_list": []interface{}{"attacker-product"},
+			},
+		})
+		resp, err = srvSet.Check(context.Background(), req)
+		if err != nil || resp.Status.Code != int32(rpc.OK) {
+			t.Fatalf("iter %d: configured jwtProviderKey: got code=%v err=%v, want OK", i, resp.GetStatus().GetCode(), err)
+		}
+		meta := resp.GetDynamicMetadata().GetFields()
+		if gotClient := meta[headerClientID].GetStringValue(); gotClient != "apigee-client" {
+			t.Fatalf("iter %d: got client_id=%q, want apigee-client", i, gotClient)
+		}
+	}
 }
