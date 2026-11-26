@@ -629,3 +629,107 @@ func TestAccessLogEdgeCases(t *testing.T) {
 	}
 	_ = s.handleHTTPLogs(msgWithListAttr)
 }
+
+func TestHandleHTTPLogsDropsHeaderFallback(t *testing.T) {
+	forgedHeaders := map[string]string{
+		headerAPI:            "forged-api",
+		headerAPIProducts:    "forged-product",
+		headerAccessToken:    "forged-token",
+		headerApplication:    "forged-app",
+		headerClientID:       "forged-client",
+		headerDeveloperEmail: "forged@example.com",
+		headerEnvironment:    "victim-env",
+		headerOrganization:   "victim-org",
+		headerScope:          "forged-scope",
+	}
+
+	testCases := []struct {
+		name             string
+		envName          string
+		isMultitenant    bool
+		commonProperties *v3.AccessLogCommon
+		wantRecords      int
+	}{
+		{
+			name:             "single-tenant forged headers without metadata",
+			envName:          "test",
+			commonProperties: nil,
+			wantRecords:      0,
+		},
+		{
+			name:          "multitenant forged headers with empty filter metadata",
+			envName:       "*",
+			isMultitenant: true,
+			commonProperties: &v3.AccessLogCommon{
+				Metadata: &core.Metadata{
+					FilterMetadata: map[string]*structpb.Struct{},
+				},
+			},
+			wantRecords: 0,
+		},
+		{
+			name:    "valid ext_authz metadata ignores forged headers",
+			envName: "env",
+			commonProperties: &v3.AccessLogCommon{
+				Metadata: &core.Metadata{
+					FilterMetadata: map[string]*structpb.Struct{
+						extAuthzFilterNamespace: {
+							Fields: makeExtAuthFields(),
+						},
+					},
+				},
+			},
+			wantRecords: 1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			analyticsMan := &testAnalyticsMan{}
+			s := AccessLogServer{
+				handler: &Handler{
+					orgName:               "org",
+					envName:               tc.envName,
+					isMultitenant:         tc.isMultitenant,
+					analyticsMan:          analyticsMan,
+					appendMetadataHeaders: true,
+				},
+			}
+			msg := &als.StreamAccessLogsMessage_HttpLogs{
+				HttpLogs: &als.StreamAccessLogsMessage_HTTPAccessLogEntries{
+					LogEntry: []*v3.HTTPAccessLogEntry{{
+						Request: &v3.HTTPRequestProperties{
+							Path:           "/v1/test",
+							RequestMethod:  core.RequestMethod_GET,
+							RequestHeaders: forgedHeaders,
+						},
+						Response:         &v3.HTTPResponseProperties{},
+						CommonProperties: tc.commonProperties,
+					}},
+				},
+			}
+
+			if err := s.handleHTTPLogs(msg); err != nil {
+				t.Fatalf("handleHTTPLogs returned unexpected error: %v", err)
+			}
+			if len(analyticsMan.records) != tc.wantRecords {
+				t.Fatalf("got %d analytics records, want %d", len(analyticsMan.records), tc.wantRecords)
+			}
+			if tc.wantRecords == 1 {
+				rec := analyticsMan.records[0]
+				if rec.APIProxy != "api" {
+					t.Errorf("APIProxy = %q, want %q", rec.APIProxy, "api")
+				}
+				if rec.ClientID != "clientID" {
+					t.Errorf("ClientID = %q, want %q", rec.ClientID, "clientID")
+				}
+				if rec.DeveloperEmail != "email@google.com" {
+					t.Errorf("DeveloperEmail = %q, want %q", rec.DeveloperEmail, "email@google.com")
+				}
+				if rec.Environment != "env" {
+					t.Errorf("Environment = %q, want %q", rec.Environment, "env")
+				}
+			}
+		})
+	}
+}

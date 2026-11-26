@@ -113,9 +113,10 @@ func (a *AccessLogServer) handleHTTPLogs(msg *als.StreamAccessLogsMessage_HttpLo
 		extAuthzMetadata := getMetadata(extAuthzFilterNamespace)
 		if extAuthzMetadata != nil {
 			api, authContext = a.handler.decodeExtAuthzMetadata(extAuthzMetadata.GetFields())
-		} else if a.handler.appendMetadataHeaders {
-			api, authContext = a.handler.decodeMetadataHeaders(req.GetRequestHeaders())
 		} else {
+			// No ext_authz dynamic metadata: do not fall back to request headers,
+			// which are end-client controlled on rejected requests and would let
+			// unauthenticated callers forge analytics records.
 			continue
 		}
 
